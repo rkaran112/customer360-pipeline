@@ -1,8 +1,10 @@
-# Customer 360 — one trusted view of every customer
-
+# Customer 360: one trusted view of every customer
 ![CI](https://github.com/rkaran112/customer360-pipeline/actions/workflows/ci.yml/badge.svg)
 
 **Live dashboard:** https://customer360-pipeline-gft7qijsnafy8u2tz4gyqz.streamlit.app/
+
+Github: https://github.com/rkaran112/customer360-pipeline/tree/main
+
 
 An e-commerce company keeps customer data in three separate systems: **CRM** (JSON),
 **Order Management** (CSV) and **Customer Support** (XML). Each system was built on its own,
