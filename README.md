@@ -100,27 +100,45 @@ that number to know whether a run failed.
 
 ## 2. How it works (the picture)
 
-```
- crm_customers.json   orders.csv    support_tickets.xml        <- 3 systems, 3 formats
-   (501 records)    (500 records)     (500 records)
-          \               |               /
-           v              v              v
-     1. EXTRACT        read every value as text, tag each record with file + record number
-           |  1501
-     2. STANDARDIZE    cust_id / customerId -> customer_id, trim, lowercase email, real types,
-           |  1501     schema drift guard (data contract)
-     3. QUALITY GATE   5 rules in order ------------------------>  QUARANTINE (7 records + reason)
-           |  1494                                                  1 duplicate, 3 invalid emails,
-     4. MERGE          CRM LEFT JOIN orders LEFT JOIN tickets        1 missing field, 1 invalid id,
-           |  497      = one row per customer                        1 negative revenue
-     5. INSIGHTS       segments, RFM, top 10, city, support, Pareto, at-risk VIPs
-           |  497
-     6. CHECKS         6 reconciliation checks -> exit code 0 / 1
-           |
-     output/  customer_360.{csv,json,parquet}, dq_report.json, quarantine.csv,
-              lineage.csv, insights/*.csv, run_metrics.json, run_history.jsonl
-           |
-     DASHBOARD  (streamlit_app.py)
+```mermaid
+flowchart TD
+    subgraph SRC["3 systems, 3 formats"]
+        CRM[("crm_customers.json<br/>CRM · JSON<br/>501 records")]
+        ORD[("orders.csv<br/>Order Management · CSV<br/>500 records")]
+        TIX[("support_tickets.xml<br/>Customer Support · XML<br/>500 records")]
+    end
+
+    CRM -->|501| S1
+    ORD -->|500| S1
+    TIX -->|500| S1
+
+    S1["<b>1. EXTRACT</b><br/>read every value as text<br/>tag each record with file + record number"]
+    S2["<b>2. STANDARDIZE</b><br/>cust_id / customerId → customer_id<br/>trim, lowercase email, real types<br/>schema drift guard (data contract)"]
+    S3{"<b>3. QUALITY GATE</b><br/>5 rules in order"}
+    Q[/"<b>QUARANTINE</b> · 7 records + reason<br/>1 duplicate · 3 invalid emails<br/>1 missing field · 1 invalid id<br/>1 negative revenue"/]
+    S4["<b>4. MERGE</b><br/>CRM LEFT JOIN orders LEFT JOIN tickets<br/>= one row per customer"]
+    S5["<b>5. INSIGHTS</b><br/>segments, RFM, top 10, city,<br/>support, Pareto, at-risk VIPs"]
+    S6{"<b>6. CHECKS</b><br/>6 reconciliation checks<br/>exit code 0 / 1"}
+    OUT[["<b>output/</b><br/>customer_360 · csv / json / parquet<br/>dq_report.json · quarantine.csv · lineage.csv<br/>insights/*.csv · run_metrics.json · run_history.jsonl"]]
+    DASH(["<b>DASHBOARD</b><br/>streamlit_app.py"])
+
+    S1 -->|1501| S2
+    S2 -->|1501| S3
+    S3 -->|1494 passed| S4
+    S3 -.->|7 rejected| Q
+    S4 -->|497 customers| S5
+    S5 -->|497| S6
+    S6 -->|all pass| OUT
+    OUT --> DASH
+
+    classDef source fill:#E3F2FD,stroke:#1E88E5,color:#0D47A1
+    classDef stage fill:#E8F5E9,stroke:#43A047,color:#1B5E20
+    classDef bad fill:#FFEBEE,stroke:#E53935,color:#B71C1C
+    classDef out fill:#FFF8E1,stroke:#F9A825,color:#5D4037
+    class CRM,ORD,TIX source
+    class S1,S2,S3,S4,S5,S6 stage
+    class Q bad
+    class OUT,DASH out
 ```
 
 | Stage | File | What happens | Rows in → out |
