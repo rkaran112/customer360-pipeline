@@ -57,6 +57,29 @@ Then open http://localhost:8501.
 **Option D — online:** open the live dashboard link at the top. The pipeline runs inside the
 app, and you can **upload your own three files** from the sidebar to run it on new data.
 
+### Deploying to Streamlit Community Cloud (free, about 3 minutes)
+1. Sign in at **share.streamlit.io** with the GitHub account that owns this repo.
+2. Click **Create app**, then **Deploy a public app from GitHub**.
+3. Repository `rkaran112/customer360-pipeline`, branch `main`, main file path `streamlit_app.py`.
+4. **Advanced settings**, then **Python 3.12** (CI tests 3.12 and 3.13).
+5. Click **Deploy**. The first build installs `requirements.txt` (about 2–3 minutes).
+
+Why nothing else is needed:
+- **No build step:** the app runs the pipeline itself on first load, and `output/` is rebuilt
+  automatically (it is not in git).
+- **Auto-redeploy:** every push to `main` redeploys the app.
+- **Shared server:** all visitors share one server process, so a lock stops two first visitors
+  from writing `output/` at the same time.
+- **Tested from a fresh clone:** the deploy path was checked by cloning the public repo into an
+  empty folder, installing the pinned `requirements.txt`, and cold-starting the server.
+
+Things to know:
+- **Sleep:** a free app sleeps after a period with no visitors. Opening the link wakes it in under a minute.
+- **Run history resets:** the server's disk is temporary, so the run-history chart starts fresh
+  after a restart. All other outputs rebuild automatically.
+- **Uploads:** uploaded files are processed in a temporary folder and are never saved to the repo
+  (the limit is 50 MB, set in `.streamlit/config.toml`).
+
 **Run the tests:**
 ```bash
 pip install -r requirements-dev.txt

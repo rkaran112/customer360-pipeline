@@ -14,6 +14,7 @@ Tabs:  Pipeline | Overview | Revenue & Segments | Analytics | Support | Data Qua
 import hashlib
 import json
 import tempfile
+import threading
 from pathlib import Path
 
 import altair as alt
@@ -63,10 +64,19 @@ def folder_signature(folder):
     return digest.hexdigest()
 
 
+# WHY a lock: on Streamlit Cloud every visitor shares ONE server process. If two people open
+# the app at the same moment, both could run the pipeline and write output/ at the same time.
+# The lock makes the second run wait for the first (it takes under a second).
+@st.cache_resource
+def pipeline_lock():
+    return threading.Lock()
+
+
 @st.cache_data(show_spinner="Running the pipeline...")
 def run_cached(input_dir, output_dir, signature):
     """Run the pipeline once per set of input files. `signature` is only there to bust the cache."""
-    result = run_pipeline.run(input_dir=input_dir, output_dir=output_dir)
+    with pipeline_lock():
+        result = run_pipeline.run(input_dir=input_dir, output_dir=output_dir)
     result.pop("config")     # contains paths; not needed by the dashboard
     return result
 
