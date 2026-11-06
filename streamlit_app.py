@@ -13,6 +13,7 @@ Tabs:  Pipeline | Overview | Revenue & Segments | Analytics | Support | Data Qua
 """
 import hashlib
 import json
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -21,13 +22,37 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-import run_pipeline
-from pipeline import chaos, diagram
-from pipeline.config import PROJECT_ROOT, load_config
-from pipeline.health import compute_health
-from pipeline.insights import format_inr
-from pipeline.outputs import for_csv, read_run_history, to_records
-from pipeline.privacy import mask_email
+
+def import_fresh_pipeline():
+    """Import run_pipeline, making sure it is the CURRENT version of the code.
+
+    WHY: a long-running server (Streamlit Cloud) can keep an OLD copy of our modules in
+    memory after a new version is pulled from GitHub. The page then calls a function the old
+    copy doesn't have (AttributeError). If we detect that, we drop every project module from
+    memory and import them again from disk.
+    """
+    import run_pipeline as module
+    if not hasattr(module, "execute"):
+        stale = [m for m in sys.modules if m in ("run_pipeline", "pipeline") or m.startswith("pipeline.")]
+        for name in stale:
+            del sys.modules[name]
+        import run_pipeline as module
+    return module
+
+
+run_pipeline = import_fresh_pipeline()
+if not hasattr(run_pipeline, "execute"):
+    # Still wrong after a fresh import: show WHICH file Python loaded, so it can be fixed.
+    st.error(f"Wrong 'run_pipeline' module loaded from {getattr(run_pipeline, '__file__', '?')}. "
+             f"Expected {Path(__file__).parent / 'run_pipeline.py'}. Reboot the app (Manage app -> Reboot).")
+    st.stop()
+
+from pipeline import chaos, diagram  # noqa: E402  (imported after the freshness check above)
+from pipeline.config import PROJECT_ROOT, load_config  # noqa: E402
+from pipeline.health import compute_health  # noqa: E402
+from pipeline.insights import format_inr  # noqa: E402
+from pipeline.outputs import for_csv, read_run_history, to_records  # noqa: E402
+from pipeline.privacy import mask_email  # noqa: E402
 
 st.set_page_config(page_title="Customer 360", page_icon="🧭", layout="wide")
 
