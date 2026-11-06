@@ -80,6 +80,9 @@ Things to know:
   after a restart. All other outputs rebuild automatically.
 - **Uploads:** uploaded files are processed in a temporary folder and are never saved to the repo
   (the limit is 50 MB, set in `.streamlit/config.toml`).
+- **After a push that changes `pipeline/` or `run_pipeline.py`:** if the live app shows an
+  `AttributeError` about a function that exists in the code, the server is still holding the old
+  modules in memory. Fix: **Manage app** (bottom right) → **⋮** → **Reboot app**.
 
 **Run the tests:**
 ```bash
