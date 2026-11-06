@@ -1,0 +1,4 @@
+# Pinned to the exact versions the project was built and tested with (reproducible runs).
+pandas==3.0.2
+pyarrow==22.0.0
+streamlit==1.52.2

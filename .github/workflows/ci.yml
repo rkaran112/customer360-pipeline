@@ -1,0 +1,28 @@
+# CI = on every push, a fresh machine installs the project, runs the pipeline and all tests.
+# If anything fails, GitHub shows a red cross on the commit.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: pip install -r requirements-dev.txt
+      - name: Run the pipeline (exit code 1 fails the build)
+        run: python run_pipeline.py
+      - name: Run all tests with coverage
+        run: pytest --cov=pipeline --cov-report=term-missing

@@ -1,0 +1,9 @@
+[theme]
+primaryColor = "#1E88E5"
+
+[server]
+# Uploaded files are small; 50 MB is plenty and protects the free cloud machine.
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false

@@ -1,0 +1,70 @@
+{
+  "project_name": "Customer 360",
+
+  "input_dir": "data/raw",
+  "output_dir": "output",
+  "log_dir": "logs",
+
+  "input_sources": [
+    {
+      "name": "crm",
+      "system": "CRM",
+      "file": "crm_customers.json",
+      "format": "json",
+      "expected_columns": ["customer_id", "name", "email", "city", "registration_date"],
+      "column_mapping": {},
+      "mandatory_fields": ["customer_id", "name", "email"]
+    },
+    {
+      "name": "orders",
+      "system": "Order Management",
+      "file": "orders.csv",
+      "format": "csv",
+      "expected_columns": ["cust_id", "total_orders", "lifetime_value", "last_order_date"],
+      "column_mapping": {"cust_id": "customer_id"},
+      "mandatory_fields": ["customer_id", "total_orders", "lifetime_value"]
+    },
+    {
+      "name": "tickets",
+      "system": "Customer Support",
+      "file": "support_tickets.xml",
+      "format": "xml",
+      "xml_record_tag": "customer",
+      "expected_columns": ["customerId", "tickets", "lastTicketDate"],
+      "column_mapping": {
+        "customerId": "customer_id",
+        "tickets": "support_tickets",
+        "lastTicketDate": "last_ticket_date"
+      },
+      "mandatory_fields": ["customer_id", "support_tickets"]
+    }
+  ],
+
+  "column_types": {
+    "registration_date": "date",
+    "last_order_date": "date",
+    "last_ticket_date": "date",
+    "total_orders": "int",
+    "support_tickets": "int",
+    "lifetime_value": "number"
+  },
+
+  "quality": {
+    "customer_id_pattern": "^C\\d{4}$",
+    "email_pattern": "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$"
+  },
+
+  "segments": {
+    "gold_above": 100000,
+    "silver_from": 50000
+  },
+
+  "insights": {
+    "top_n": 10,
+    "high_ticket_threshold": 5,
+    "at_risk_days": 90,
+    "pareto_top_share": 0.2
+  },
+
+  "as_of_date": null
+}
