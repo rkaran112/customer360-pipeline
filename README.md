@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/rkaran112/customer360-pipeline/actions/workflows/ci.yml/badge.svg)
 
-**Live dashboard:** _link added after deployment on Streamlit Community Cloud_
+**Live dashboard:** https://customer360-pipeline-gft7qijsnafy8u2tz4gyqz.streamlit.app/
 
 An e-commerce company keeps customer data in three separate systems: **CRM** (JSON),
 **Order Management** (CSV) and **Customer Support** (XML). Each system was built on its own,
