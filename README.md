@@ -34,19 +34,53 @@ A **Streamlit dashboard** shows the results, including a live picture of the pip
 
 ## 1. Run it
 
-**Option A — one command** (needs Python 3.11+):
-```bash
-pip install -r requirements.txt
-```
-```bash
-python run_pipeline.py
-```
-```bash
-streamlit run streamlit_app.py
-```
+**Option A — step by step** (Python 3.11, 3.12 or 3.13; tested on all three)
 
-**Option B — double-click** `run.bat` on Windows. It creates its own Python environment,
-installs everything, runs the pipeline and opens the dashboard.
+1. Get the code. Either clone it, or download the ZIP from GitHub (**Code → Download ZIP**) and unzip it.
+   ```bash
+   git clone https://github.com/rkaran112/customer360-pipeline.git
+   ```
+   ```bash
+   cd customer360-pipeline
+   ```
+2. Create a private Python environment (`.venv`), so these libraries don't change your other projects.
+   ```bash
+   python -m venv .venv
+   ```
+   Then **activate** it:
+
+   | Your terminal | Command |
+   |---|---|
+   | Windows PowerShell | `.venv\Scripts\Activate.ps1` |
+   | Windows Command Prompt | `.venv\Scripts\activate.bat` |
+   | macOS / Linux | `source .venv/bin/activate` |
+
+   The prompt now starts with `(.venv)`. On Windows, if `python` is not found, use `py -3` instead.
+3. Install the pinned libraries (about 1–2 minutes the first time):
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Run the pipeline. It ends with `FINISHED OK` and exit code 0 (about 1 second):
+   ```bash
+   python run_pipeline.py
+   ```
+5. Open the dashboard. A browser tab opens at http://localhost:8501; press `Ctrl+C` in the terminal to stop it:
+   ```bash
+   streamlit run streamlit_app.py
+   ```
+
+**Troubleshooting**
+
+| Problem | Fix |
+|---|---|
+| PowerShell: "running scripts is disabled" when activating | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then activate again |
+| `pip install` fails with a "long path" error on Windows | the folder path is too deep (e.g. inside OneDrive). Move the project to a short path such as `D:\customer360`, delete `.venv`, and repeat from step 2 |
+| `streamlit` is not recognised | the environment is not active: run the activate command from step 2 |
+| Port 8501 already in use | `streamlit run streamlit_app.py --server.port 8502` |
+| The pipeline prints `PIPELINE FAILED` | read the `hint:` line; full details are in the crash report it names (see "Exit codes" below) |
+
+**Option B — double-click** `run.bat` on Windows. It creates its own `.venv`, installs everything,
+runs the pipeline and opens the dashboard. Close the window to stop it.
 
 **Option C — Docker** (same result on any machine):
 ```bash
@@ -82,11 +116,11 @@ Things to know:
   after a restart. All other outputs rebuild automatically.
 - **Uploads:** uploaded files are processed in a temporary folder and are never saved to the repo
   (the limit is 50 MB, set in `.streamlit/config.toml`).
-- **After a push that changes `pipeline/` or `run_pipeline.py`:** if the live app shows an
-  `AttributeError` about a function that exists in the code, the server is still holding the old
-  modules in memory. Fix: **Manage app** (bottom right) → **⋮** → **Reboot app**.
+- **After a push:** the server can keep old copies of `pipeline/` modules in memory. The app
+  detects this and re-imports the current code by itself. If the page ever names a "wrong
+  run_pipeline module", use **Manage app** (bottom right) → **⋮** → **Reboot app**.
 
-**Run the tests:**
+**Run the tests** (in the activated environment; 129 tests, about 2–3 minutes because 13 of them are chaos scenarios):
 ```bash
 pip install -r requirements-dev.txt
 ```
@@ -113,12 +147,17 @@ failed, and which kind of failure it was.
 python chaos_test.py
 ```
 
-**Send alerts to Slack / Teams / Discord:** set the webhook URL in an environment variable.
-It is never stored in code or config, because a webhook URL is a secret.
-```bash
-set C360_ALERT_WEBHOOK=https://hooks.slack.com/services/XXX
-```
+**Send alerts to Slack / Teams / Discord:** set the webhook URL in an environment variable
+before running. It is never stored in code or config, because a webhook URL is a secret.
+
+| Your terminal | Command |
+|---|---|
+| Windows PowerShell | `$env:C360_ALERT_WEBHOOK = "https://hooks.slack.com/services/XXX"` |
+| Windows Command Prompt | `set C360_ALERT_WEBHOOK=https://hooks.slack.com/services/XXX` |
+| macOS / Linux | `export C360_ALERT_WEBHOOK=https://hooks.slack.com/services/XXX` |
+
 On Streamlit Cloud, add `C360_ALERT_WEBHOOK = "https://..."` under **App settings → Secrets**.
+Without a webhook, alerts still appear in the console, the logs, `output/alerts.json` and the dashboard.
 
 ---
 
