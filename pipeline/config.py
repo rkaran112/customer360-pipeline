@@ -34,7 +34,9 @@ def load_config(path=None):
     # WHAT: fail fast if a required section is missing.
     missing = [s for s in REQUIRED_SECTIONS if s not in config]
     if missing:
-        raise ValueError(f"config file {path.name} is missing section(s): {missing}")
+        from pipeline.diagnostics import PipelineDataError
+        raise PipelineDataError(f"config file {path.name} is missing section(s): {missing}",
+                                hint="Compare your config with config.json in the repository.")
 
     # WHAT: turn "data/raw" into "D:/.../customer360/data/raw".
     # WHY: so `python run_pipeline.py` works from any working directory, and on any machine.

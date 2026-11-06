@@ -16,8 +16,9 @@ REAL_DATA = PROJECT_ROOT / "data" / "raw"
 @pytest.fixture(scope="module")
 def real_run(tmp_path_factory):
     """Run the full pipeline once on the real data into a temp folder (shared by the tests below)."""
-    out = tmp_path_factory.mktemp("e2e") / "output"
-    return run_pipeline.run(input_dir=REAL_DATA, output_dir=out), out
+    base = tmp_path_factory.mktemp("e2e")
+    outcome = run_pipeline.execute(input_dir=REAL_DATA, output_dir=base / "output", log_dir=base / "logs")
+    return outcome["result"], base / "output"
 
 
 def test_exact_dq_numbers_on_real_data(real_run):
@@ -40,7 +41,7 @@ def test_all_output_files_exist_and_are_not_empty(real_run):
     """Every promised output file is written and non-empty. Why: downstream users depend on these files."""
     out = real_run[1]
     files = ["customer_360.csv", "customer_360.json", "customer_360.parquet", "dq_report.json", "quarantine.csv",
-             "lineage.csv", "run_metrics.json", "run_history.jsonl", "insights/top_customers.csv",
+             "lineage.csv", "run_metrics.json", "run_history.jsonl", "alerts.json", "insights/top_customers.csv",
              "insights/segment_summary.csv", "insights/headlines.json"]
     for name in files:
         assert (out / name).exists() and (out / name).stat().st_size > 0, name
@@ -49,7 +50,7 @@ def test_all_output_files_exist_and_are_not_empty(real_run):
 def test_rerun_gives_identical_results(real_run, tmp_path):
     """Running twice on the same data gives the same 360 and DQ report. Why: idempotent = safe to rerun after a failure."""
     second_out = tmp_path / "again"
-    run_pipeline.run(input_dir=REAL_DATA, output_dir=second_out)
+    run_pipeline.execute(input_dir=REAL_DATA, output_dir=second_out, log_dir=tmp_path / "logs")
     first_out = real_run[1]
     assert (first_out / "customer_360.csv").read_bytes() == (second_out / "customer_360.csv").read_bytes()
     assert json.loads((first_out / "dq_report.json").read_text()) == json.loads((second_out / "dq_report.json").read_text())

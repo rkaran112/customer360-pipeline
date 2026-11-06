@@ -7,10 +7,10 @@ APP = str(PROJECT_ROOT / "streamlit_app.py")
 
 
 def test_app_runs_without_errors_and_has_all_tabs():
-    """The dashboard starts with no exception and shows 7 tabs. Why: a broken demo page is the worst possible failure."""
+    """The dashboard starts with no exception and shows 9 tabs. Why: a broken demo page is the worst possible failure."""
     at = AppTest.from_file(APP, default_timeout=180).run()
     assert not at.exception
-    assert len(at.tabs) == 7
+    assert len(at.tabs) == 9
     assert len(at.metric) >= 10
 
 
@@ -21,3 +21,11 @@ def test_customer_lookup_shows_the_customer():
     assert not at.exception
     assert any("C0001" in m.value for m in at.markdown)
     assert any("us***@example.com" in c.value for c in at.caption)
+
+
+def test_chaos_lab_runs_a_scenario_from_the_dashboard():
+    """Clicking 'Run scenario' in the Chaos Lab runs it and shows a passing result. Why: the live demo of recovery must work."""
+    at = AppTest.from_file(APP, default_timeout=180).run()
+    at.button[[b.label for b in at.button].index("💥 Run scenario")].click().run(timeout=180)
+    assert not at.exception
+    assert any(e.label.startswith("✅") and "Corrupted JSON" in e.label for e in at.expander)

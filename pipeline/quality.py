@@ -109,6 +109,10 @@ def check_source(df, source, config):
         failed = problems.dropna().index
         reason.loc[failed] = rule_name
         detail.loc[failed] = problems.loc[failed]
+        # DEBUG: how many rows each rule rejected, with up to 3 examples.
+        if len(failed):
+            log.debug("    rule %-20s %-8s rejected %d, e.g. %s", rule_name, source["name"], len(failed),
+                      list(problems.loc[failed].head(3)))
 
     clean = df[reason.isna()].copy()
     quarantine = df[reason.notna()].copy()

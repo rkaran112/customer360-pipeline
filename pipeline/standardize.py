@@ -137,6 +137,10 @@ def standardize_all(raw_tables, config):
         tables[source["name"]], warnings = standardize_source(
             raw_tables[source["name"]], source, config["column_types"])
         all_warnings.extend(warnings)
-        log.info("  standardized %-8s columns -> %s", source["name"],
-                 [c for c in tables[source["name"]].columns if not c.startswith("_")])
+        df = tables[source["name"]]
+        log.info("  standardized %-8s columns -> %s", source["name"], [c for c in df.columns if not c.startswith("_")])
+        # DEBUG: the type of every column and how many values are missing after conversion.
+        # A jump in missing values here usually means a format changed (e.g. a new date format).
+        log.debug("  %s types: %s", source["name"], {c: str(t) for c, t in df.dtypes.items()})
+        log.debug("  %s missing values: %s", source["name"], {c: int(n) for c, n in df.isna().sum().items() if n})
     return tables, all_warnings

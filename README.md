@@ -25,7 +25,8 @@ A **Streamlit dashboard** shows the results, including a live picture of the pip
 | Data quality | 7 bad records caught and quarantined, 1,494 passed, **DQ score 99.53%** |
 | Output | 497 customers in `customer_360` (CSV + JSON + Parquet) + 12 insight tables |
 | Run time | under 1 second for the whole pipeline |
-| Tests | 64 test functions = **81 test cases**, all passing, 98% code coverage, CI on Windows and Linux |
+| Tests | 97 test functions = **129 test cases**, all passing, 99% code coverage, CI on Windows and Linux |
+| Reliability | graded alerts + webhook, crash reports, retries, last-known-good publishing, **13 chaos scenarios**, live health panel |
 
 ---
 
@@ -90,11 +91,29 @@ pytest
 
 **Command-line options:**
 ```bash
-python run_pipeline.py --input-dir D:/new_files --output-dir D:/results --config config.json
+python run_pipeline.py --input-dir D:/new_files --output-dir D:/results --config config.json --log-level DEBUG
 ```
-The exit code is `0` when everything passed and `1` when the run failed (bad config, missing
-file, schema drift or a failed check). Schedulers such as cron, Airflow and GitHub Actions use
-that number to know whether a run failed.
+
+| Exit code | Meaning | Who fixes it |
+|---|---|---|
+| `0` | success, outputs published | nobody |
+| `1` | **data problem**: missing or broken file, schema drift, a CRITICAL alert or a failed check. The last good outputs are kept | the source team (fix the input) |
+| `2` | **code problem**: an unexpected error, i.e. a bug. A crash report is written | the developers (fix the code) |
+
+Schedulers such as cron, Airflow and GitHub Actions read this number to know whether a run
+failed, and which kind of failure it was.
+
+**Run the chaos tests** (break things on purpose, prove recovery):
+```bash
+python chaos_test.py
+```
+
+**Send alerts to Slack / Teams / Discord:** set the webhook URL in an environment variable.
+It is never stored in code or config, because a webhook URL is a secret.
+```bash
+set C360_ALERT_WEBHOOK=https://hooks.slack.com/services/XXX
+```
+On Streamlit Cloud, add `C360_ALERT_WEBHOOK = "https://..."` under **App settings → Secrets**.
 
 ---
 
@@ -173,6 +192,10 @@ flowchart TD
 | FR-12 | Upload your own 3 files in the dashboard and rerun the pipeline; download the results | `streamlit_app.py` |
 | FR-13 | Record stage metrics (rows in/out, rejected, ms) and a run history | `run_pipeline.py`, `outputs.py` |
 | FR-14 | Schema drift guard: compare arriving columns with the config "data contract" | `standardize.py` |
+| FR-15 | Graded alerts (INFO/WARNING/CRITICAL) on quarantine counts and rates, empty sources, drift, volume change, DQ drop, failed checks; optional webhook | `alerts.py` |
+| FR-16 | On failure: a clear message with stage + fix hint, a crash report, exit code 1 (data) or 2 (bug) | `diagnostics.py`, `run_pipeline.py` |
+| FR-17 | Chaos testing: 13 injected faults, each verified for the right reaction and for recovery (CLI + dashboard) | `chaos.py`, `chaos_test.py` |
+| FR-18 | Live pipeline health: status, success rate, freshness, durations, last failure (auto-refresh) | `health.py`, `streamlit_app.py` |
 
 ### Non-functional requirements — *how well* it does it
 | ID | Quality | How it is met |
@@ -180,9 +203,9 @@ flowchart TD
 | NFR-1 | **Executable** | One command, `run.bat` double-click, Docker image, live URL |
 | NFR-2 | **Configurable** | Sources, column mappings, mandatory fields, regex patterns, thresholds and as-of date all live in `config.json`; a new JSON/CSV/XML source needs **no code** |
 | NFR-3 | **Scalable** | Every stage is a function: table in, table out, no hidden state; readers and rules are registries; see section 10 |
-| NFR-4 | **Reliable** | Reconciliation, 6 checks, exit code 1, `validate="one_to_one"` joins, clear errors for a missing file or column |
+| NFR-4 | **Reliable** | Reconciliation, 6 checks, `validate="one_to_one"` joins, last-known-good publishing, retry with backoff, failure isolation (a dead webhook never stops a run); proven by 13 chaos scenarios |
 | NFR-5 | **Reproducible / idempotent** | "Today" comes from the data, not the clock; duplicates resolved in a stable order; the same input gives byte-identical output (tested) |
-| NFR-6 | **Observable** | Console + `logs/pipeline.log`, per-stage metrics, run history, lineage for every record |
+| NFR-6 | **Observable** | Run id on every log line; text log + JSON log (`pipeline.jsonl`) with rotation; DEBUG mode; per-stage metrics; run history of good AND failed runs; live health panel; alerts; lineage for every record |
 | NFR-7 | **Testable** | 81 test cases, each with a "why", in CI on 2 operating systems × 2 Python versions |
 | NFR-8 | **Fast** | Under 1 s for 1,501 records; the dashboard caches the run per set of input files |
 | NFR-9 | **Maintainable** | A plain-English comment on every block, `>>> TO CHANGE:` markers, small single-purpose functions |
@@ -251,6 +274,125 @@ customer to attach to. They are **counted and reported**, never hidden.
    customers have not ordered for 90+ days: Rs 4.29 crore of lifetime value at risk."*
 9. **Customer lookup.** Search by id or name to get one customer's 360° card, with the email masked.
 10. **Downloads.** customer_360 (CSV/JSON), dq_report.json and quarantine.csv from the sidebar.
+
+---
+
+## 5b. Reliability: logging, alerts, crash help, chaos tests, live health
+
+**What happens when a run goes wrong:**
+```mermaid
+flowchart LR
+    RUN["pipeline run<br/>(run id a1b2c3d4)"] --> OK{"all checks pass and<br/>no CRITICAL alert?"}
+    OK -->|yes| PUB["publish atomically<br/>staging → output/"]
+    OK -->|no| KEEP["keep last good outputs<br/>failed run → output/failed_runs/id/"]
+    RUN -->|"exception"| CRASH["crash report<br/>logs/crash_id.json"]
+    CRASH --> CODE{"data or code?"}
+    CODE -->|data| E1["exit 1 + fix hint"]
+    CODE -->|bug| E2["exit 2 + traceback"]
+    PUB --> HIST[("run_history.jsonl<br/>good AND failed runs")]
+    KEEP --> HIST
+    E1 --> HIST
+    E2 --> HIST
+    HIST --> HEALTH["live health panel<br/>HEALTHY / DEGRADED / FAILING"]
+    RUN --> ALERT["alerts<br/>INFO · WARNING · CRITICAL"] --> HOOK["console · logs · alerts.json<br/>+ Slack/Teams webhook"]
+```
+
+**1. Logging** (`pipeline/logger.py`)
+- **Run id:** every line carries the run id (`2026-11-06 14:39:08 | WARNING | fc33eba4 | ...`).
+- **Two log files:**
+  - `logs/pipeline.log` is for people.
+  - `logs/pipeline.jsonl` has one JSON object per line, for log tools such as ELK, Splunk or
+    CloudWatch, including fields like `stage`, `source` and `alert_code`.
+- **Rotation:** files rotate at 5 MB, keeping 5 old ones, so logs never fill a disk.
+- **Debug mode:** `--log-level DEBUG` adds column types, missing-value counts and up to 3
+  example rows per failing rule.
+
+**2. Alerts** (`pipeline/alerts.py`, limits in `config.json → alerts`)
+
+| Alert | Severity | Fires when | On today's data |
+|---|---|---|---|
+| `QUARANTINE_RATE` | WARNING ≥ 0.5%, CRITICAL ≥ 5% | share of a source's records quarantined | **WARNING**: crm 0.8% (4 of 501) |
+| `RULE_FAILURES` | INFO | any rule rejected rows, with the count | 5 alerts (3 invalid emails, 1 duplicate, ...) |
+| `EMPTY_SOURCE` | CRITICAL | a source sent 0 records | – |
+| `SCHEMA_DRIFT` | WARNING | unexpected columns | – |
+| `VOLUME_CHANGE` | WARNING | records ±50% vs the last good run (half-sent files) | – |
+| `DQ_SCORE_DROP` | WARNING | DQ score fell ≥ 1 point vs the last good run | – |
+| `ORPHAN_RECORDS` | INFO | orders/tickets with no clean customer | 6 records |
+| `CHECK_FAILED` | CRITICAL | any step-6 check fails | – |
+| `PIPELINE_FAILED` | CRITICAL | the run crashed or stopped on a data error | – |
+
+Where alerts appear:
+- **Always:** the console, the logs, `output/alerts.json`, and the dashboard (a banner, plus the Data Quality tab).
+- **Optionally:** a **webhook** (Slack, Teams, Discord or any HTTP endpoint) for WARNING and above.
+- **A CRITICAL alert fails the run** (exit 1), so bad data is never published as a success.
+
+**3. Crash help** (`pipeline/diagnostics.py`)
+
+A failure prints what broke, where, and how to fix it:
+```
+PIPELINE FAILED (DATA PROBLEM) in stage 'Extract': source 'crm': input file not found: ...
+  hint:         Check input_dir in config.json (or --input-dir) and the file names under input_sources.
+  crash report: logs/crash_175f1902.json
+  exit code:    1
+```
+
+The crash report holds:
+- the stage, the error and the full traceback;
+- the **exact command to reproduce** the run in DEBUG mode;
+- library versions and the config used;
+- a **fingerprint of every input file** (size, md5, line count, modified time).
+
+The fingerprint proves whether a file changed since the last good run. The report never
+contains file contents, so no personal data leaks into tickets.
+
+**4. Self-recovery**
+- **Retry with backoff:** a temporarily locked file is retried after 0.2 s, then 0.4 s. Each
+  retry is counted in the run history.
+- **Last-known-good publishing:** a healthy run writes to `output/.staging` and then moves each
+  file into place, so readers never see a half-written file. An unhealthy run goes to
+  `output/failed_runs/<run_id>/`, and the good outputs stay untouched.
+- **Automatic recovery:** the next run with good data is published as normal, with no manual cleanup.
+- **Failure isolation:** a dead webhook, a half-written history line or one bad row never stops the run.
+
+**5. Chaos tests** (`pipeline/chaos.py`, `python chaos_test.py`, dashboard → **🧪 Chaos Lab**)
+
+Each scenario works in a private sandbox copy of the data:
+1. Run a good **baseline**.
+2. **Inject one fault**, then check the exit code, the expected alert or error, that the
+   last good outputs are untouched, the history entry and the crash report.
+3. **Remove the fault** and confirm the next run succeeds (= recovery).
+
+| Scenario | Fault injected | Expected | Protection |
+|---|---|---|---|
+| `baseline` | none (control) | exit 0 | normal run |
+| `corrupt_json` | CRM file cut in half | exit 1 | stops at Extract, names file + line |
+| `missing_file` | orders.csv absent | exit 1 | names the missing file |
+| `drop_mandatory_column` | `lifetime_value` removed | exit 1 | schema drift guard |
+| `extra_column` | unknown column added | exit 0 + WARNING | column ignored, run continues |
+| `empty_source` | 0 tickets | exit 1 + CRITICAL | not published |
+| `bad_row_spike` | 20% negative revenue | exit 1 + CRITICAL | quarantined, not published |
+| `duplicate_flood` | 10 CRM rows resent | exit 0 + WARNING | duplicates quarantined |
+| `partial_export` | only 40% of orders | exit 0 + WARNING | volume change detected |
+| `bad_encoding` | orders.csv as UTF-16 | exit 1 | "not UTF-8" hint |
+| `flaky_disk` | file locked for 2 reads | exit 0 | retry with backoff |
+| `webhook_down` | Slack unreachable | exit 0 | failure logged, run unaffected |
+| `code_crash` | bug inside merge | exit 2 | crash report with traceback |
+
+**6. Live pipeline health** (`pipeline/health.py`, dashboard → strip at the top + **❤️ Pipeline Health** tab)
+
+The health status comes from the run history and refreshes **every 5 seconds**:
+- **HEALTHY:** the last run was good and raised no warnings.
+- **DEGRADED:** the last run raised warnings, a recent run failed and the pipeline has since
+  recovered, or the data is stale (no good run in 26 hours).
+- **FAILING:** the last run failed.
+
+The tab also shows:
+- the success rate over the last 20 runs;
+- hours since the last good run;
+- average and slowest duration;
+- a timeline with failed runs in red, and the DQ score per run;
+- the last failure with its fix hint and crash report;
+- a **Run now** button.
 
 ---
 
@@ -365,11 +507,41 @@ the **trade-off**, and **how to change it** if someone asks.
 - **Why:** Streamlit Cloud is free and deploys straight from GitHub, so every push redeploys.
   Docker covers any other server or cloud.
 
+**D-21 · Last-known-good publishing (a failed run never overwrites good outputs)**
+- **Options:** always overwrite, or publish only healthy runs.
+- **Why:** dashboards and downstream systems keep yesterday's correct numbers instead of today's
+  broken ones. Staging plus a file move means nobody ever reads a half-written file.
+- **Trade-off:** after a failure, the published data is one run old. The health panel makes that visible.
+
+**D-22 · Two failure exit codes: 1 = data, 2 = code**
+- **Why:** it tells on-call *who* to call (the source team or the developers) before anyone opens a log.
+
+**D-23 · CRITICAL alerts fail the run; WARNING and INFO do not**
+- **Why:** a few bad rows are normal (quarantine handles them). A 5%+ spike or an empty file means
+  the source is broken. Limits live in config, and `fail_on` can be changed.
+- **Trade-off:** thresholds need tuning per source over time.
+
+**D-24 · Alert webhook URL in an environment variable, and a webhook failure never stops a run**
+- **Why:** a webhook URL is a secret (anyone holding it can post to your channel). A Slack outage
+  must not stop the data.
+
+**D-25 · Retry only transient errors (locked file), not broken content**
+- **Why:** reading a broken JSON file again gives the same error; retrying it would only hide the
+  real problem and waste time. 3 attempts with exponential backoff, set in config.
+
+**D-26 · JSON logs alongside text logs, with a run id on every line**
+- **Why:** people read text; log platforms search JSON. The run id ties together the logs,
+  history, alerts and crash report of one run.
+
+**D-27 · Chaos tests run in a sandbox, in CI and in the dashboard**
+- **Why:** failure handling that is never exercised usually doesn't work. A sandbox means a
+  public visitor can break things safely.
+
 ---
 
 ## 7. Tests — what each one checks and why
 
-Run them with `pytest` (81 test cases from 64 test functions). Most tests use **tiny
+Run them with `pytest` (129 test cases from 97 test functions, 99% coverage). Most tests use **tiny
 hand-made files** in a temporary folder. That means they never depend on an earlier run,
 each one shows exactly the defect it is about, and they never touch the real `output/`.
 
@@ -451,8 +623,45 @@ each one shows exactly the defect it is about, and they never touch the real `ou
 | 78 | `test_cli_exit_code_one_on_missing_file` | exit 1 + names the file | failures must be visible |
 | 79 | `test_failed_check_gives_exit_code_one` | broken reconcile → 1 | wrong numbers never published as success |
 | **Dashboard** | `tests/test_dashboard.py` | | |
-| 80 | `test_app_runs_without_errors_and_has_all_tabs` | 7 tabs, no exception | a broken demo is the worst failure |
+| 80 | `test_app_runs_without_errors_and_has_all_tabs` | 9 tabs, no exception | a broken demo is the worst failure |
 | 81 | `test_customer_lookup_shows_the_customer` | C0001 card, masked email | the core "360" feature |
+| 82 | `test_chaos_lab_runs_a_scenario_from_the_dashboard` | button runs a scenario, ✅ result | the live recovery demo must work |
+| **Alerts** | `tests/test_alerts.py` | | |
+| 83 | `test_quarantine_rate_warning` | 1% → WARNING | look before it gets worse |
+| 84 | `test_quarantine_rate_critical` | 10% → CRITICAL | the upstream system is broken |
+| 85 | `test_low_quarantine_rate_gives_no_rate_alert` | 0.2% → no alert | alert fatigue makes people ignore alerts |
+| 86 | `test_each_failing_rule_gives_an_info_alert_with_count` | "3 record(s) failed invalid_emails" | counts per problem type |
+| 87 | `test_empty_source_is_critical` | 0 records → CRITICAL | an empty export is a failure |
+| 88 | `test_schema_drift_is_a_warning` | new column → WARNING | the data contract changed |
+| 89 | `test_volume_change_vs_previous_run` | −60% → WARNING | catches half-sent files |
+| 90 | `test_no_previous_run_means_no_comparison_alerts` | first run: no comparisons | nothing to compare with |
+| 91 | `test_dq_score_drop_vs_previous_run` | 99.5 → 97 → WARNING | an early warning sign |
+| 92 | `test_failed_check_is_critical` | failed check → CRITICAL | numbers untrustworthy |
+| 93 | `test_alerts_sorted_worst_first` | CRITICAL first | the important line is read first |
+| 94 | `test_webhook_receives_warning_and_critical_only` | local HTTP server gets WARNING+ in Slack/Discord format | chat stays readable |
+| 95 | `test_no_webhook_configured_means_nothing_sent` | no env var → no network | works offline |
+| 96 | `test_unreachable_webhook_never_raises` | dead URL → logged | Slack outage ≠ pipeline outage |
+| 97 | `test_critical_alert_fails_the_run_and_blocks_publishing` | exit 1, output kept in failed_runs/ | bad data never looks like success |
+| **Crash, logging, recovery** | `tests/test_diagnostics.py` | | |
+| 98 | `test_code_crash_gives_exit_2_and_full_crash_report` | stage, traceback, md5s, reproduce cmd | debug without re-running |
+| 99 | `test_broken_json_gives_exit_1_naming_file_and_line` | file + line in the message | the fix is in the data |
+| 100 | `test_crash_report_contains_no_personal_data` | no names or emails | reports get shared in tickets |
+| 101 | `test_failed_runs_are_recorded_in_history` | ok=False + status | health needs failures too |
+| 102 | `test_last_good_outputs_survive_a_failed_run` | byte-identical 360 | a bad day doesn't wipe good data |
+| 103 | `test_json_log_lines_have_run_id` | valid JSON, run id, stage | log tools filter by run |
+| 104 | `test_log_files_rotate` | 2 rotating handlers | never fill a disk |
+| 105 | `test_debug_level_logs_extra_detail` | types and examples in DEBUG | faster bug hunting |
+| 106 | `test_transient_lock_is_retried_and_succeeds` | 3rd attempt works | hiccups heal by themselves |
+| 107 | `test_retry_gives_up_with_clear_error` | gives up after N, with a hint | don't retry forever |
+| 108–110 | `test_every_error_gets_a_hint` ×3 | specific advice / "bug" | tell on-call what to do |
+| **Health + chaos** | `tests/test_health_and_chaos.py` | | |
+| 111 | `test_no_runs_is_unknown` | UNKNOWN | never claim healthy without evidence |
+| 112 | `test_clean_runs_are_healthy` | HEALTHY, 100% | baseline |
+| 113 | `test_warning_alerts_make_it_degraded` | DEGRADED | working, but look |
+| 114 | `test_last_run_failed_is_failing` | FAILING + reason | first thing on-call sees |
+| 115 | `test_recovered_after_failure_is_degraded_not_healthy` | DEGRADED, 50% | recent instability matters |
+| 116 | `test_stale_data_is_flagged` | 30 h → stale | a silently stopped pipeline looks green otherwise |
+| 117–129 | `test_chaos_scenario_is_handled_and_recovers` ×13 | every fault: right exit, signal, kept outputs, recovery | proves failure handling for real |
 
 CI (`.github/workflows/ci.yml`) runs the pipeline and every test on **Windows + Linux ×
 Python 3.12 + 3.13** on every push, with a coverage report.
@@ -559,17 +768,28 @@ Why it scales:
 - **Parquet:** a compressed, column-based file format that analytics tools read very fast.
 - **Exit code:** the number a program returns when it ends. 0 means OK, anything else means failed.
 - **CI:** Continuous Integration. Tests run automatically on every push.
+- **Alert / webhook:** an automatic message when something needs attention; a webhook is a URL that receives it (for example a Slack channel).
+- **Chaos testing:** breaking a system on purpose to prove it fails safely and recovers.
+- **Last-known-good:** keep the previous correct output when a new run fails.
+- **Backoff:** waiting a little longer before each retry (0.2 s, then 0.4 s).
+- **Crash report:** a file with everything needed to debug a failed run.
+- **Pipeline health:** whether the pipeline is running correctly right now (HEALTHY / DEGRADED / FAILING).
 
 ---
 
 ## Project layout
 ```
 config.json            every setting (sources, rules, thresholds)
-run_pipeline.py        one command: runs steps 1-6, logs, exit code
-streamlit_app.py       dashboard (7 tabs), runs the pipeline itself
+run_pipeline.py        one command: steps 1-6, alerts, publish, crash handling, exit 0/1/2
+chaos_test.py          13 chaos scenarios from the command line
+streamlit_app.py       dashboard (9 tabs incl. live health + chaos lab), runs the pipeline itself
 pipeline/
   config.py            loads config.json
-  logger.py            console + logs/pipeline.log
+  logger.py            text + JSON logs with run id, rotation
+  alerts.py            graded alerts + webhook
+  diagnostics.py       crash reports, fix hints, data-vs-bug classification
+  health.py            HEALTHY / DEGRADED / FAILING from the run history
+  chaos.py             fault injectors + recovery verification
   extract.py           STEP 1
   standardize.py       STEP 2
   quality.py           STEP 3
@@ -579,7 +799,7 @@ pipeline/
   outputs.py           writes output/
   diagram.py           pipeline picture for the dashboard
   privacy.py           email masking
-tests/                 81 test cases
+tests/                 129 test cases
 data/raw/              the 3 source files from the brief
 run.bat, Dockerfile, .github/workflows/ci.yml, requirements*.txt
 ```

@@ -24,5 +24,7 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run the pipeline (exit code 1 fails the build)
         run: python run_pipeline.py
+      - name: Chaos tests (inject 13 faults, prove recovery)
+        run: python chaos_test.py
       - name: Run all tests with coverage
         run: pytest --cov=pipeline --cov-report=term-missing

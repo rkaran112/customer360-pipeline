@@ -22,8 +22,9 @@ import pandas as pd
 import streamlit as st
 
 import run_pipeline
-from pipeline import diagram
+from pipeline import chaos, diagram
 from pipeline.config import PROJECT_ROOT, load_config
+from pipeline.health import compute_health
 from pipeline.insights import format_inr
 from pipeline.outputs import for_csv, read_run_history, to_records
 from pipeline.privacy import mask_email
@@ -74,11 +75,17 @@ def pipeline_lock():
 
 @st.cache_data(show_spinner="Running the pipeline...")
 def run_cached(input_dir, output_dir, signature):
-    """Run the pipeline once per set of input files. `signature` is only there to bust the cache."""
+    """Run the pipeline once per set of input files. `signature` is only there to bust the cache.
+
+    execute() never raises: a failed run comes back as an outcome with the stage, error and hint,
+    and is recorded in the run history (so the health panel shows it).
+    """
     with pipeline_lock():
-        result = run_pipeline.run(input_dir=input_dir, output_dir=output_dir)
-    result.pop("config")     # contains paths; not needed by the dashboard
-    return result
+        outcome = run_pipeline.execute(input_dir=input_dir, output_dir=output_dir)
+    outcome.pop("error", None)          # exception objects can't be cached; the text is in summary
+    if outcome["result"] is not None:
+        outcome["result"].pop("config")     # contains paths; not needed by the dashboard
+    return outcome
 
 
 def save_uploads(uploads):
@@ -109,16 +116,21 @@ with st.sidebar:
 # WHAT: choose which input folder to run on (uploaded or sample), then run (or reuse the cache).
 input_dir = Path(st.session_state.get("upload_dir", SAMPLE_DIR))
 output_dir = input_dir / "output" if "upload_dir" in st.session_state else SAMPLE_OUTPUT
-try:
-    R = run_cached(str(input_dir), str(output_dir), folder_signature(input_dir))
-except Exception as error:   # at the UI boundary we show ANY pipeline error instead of a crash page
-    st.error(f"The pipeline could not run on these files: {error}")
+OUTCOME = run_cached(str(input_dir), str(output_dir), folder_signature(input_dir))
+if OUTCOME["result"] is None:
+    # The run failed before producing data (bad file, schema drift, bug): explain it, then fall back.
+    s = OUTCOME["summary"]
+    st.error(f"**The pipeline failed in stage '{s['stage']}'** (exit code {s['exit_code']}): {s['error']}  \n"
+             f"💡 **How to fix:** {s['hint']}")
     if "upload_dir" in st.session_state:
         del st.session_state["upload_dir"]
-        st.info("Switched back to the sample data.")
-        R = run_cached(str(SAMPLE_DIR), str(SAMPLE_OUTPUT), folder_signature(SAMPLE_DIR))
-    else:
+        st.info("Showing the last good results from the sample data instead.")
+        output_dir = SAMPLE_OUTPUT
+        OUTCOME = run_cached(str(SAMPLE_DIR), str(SAMPLE_OUTPUT), folder_signature(SAMPLE_DIR))
+    if OUTCOME["result"] is None:
         st.stop()
+R = OUTCOME["result"]
+ALERTS = R["alerts"]
 
 C360 = R["customer_360"]
 DQ = R["dq_report"]
@@ -163,8 +175,44 @@ status = (f"✅ All {len(R['run_metrics']['checks'])} checks passed" if checks_o
 st.caption(f"{status} · DQ score {DQ['dq_score_pct']}% · {DQ['total_records']} records -> "
            f"{len(C360)} customers · ran in {R['run_metrics']['duration_seconds']}s")
 
+STATUS_STYLE = {"HEALTHY": ("🟢", st.success), "DEGRADED": ("🟠", st.warning),
+                "FAILING": ("🔴", st.error), "UNKNOWN": ("⚪", st.info)}
+
+
+# LIVE health strip: st.fragment(run_every=...) re-runs ONLY this small block every 5 seconds,
+# re-reading run_history.jsonl - so runs started elsewhere (CLI, scheduler) show up by themselves.
+@st.fragment(run_every="5s")
+def live_health_strip():
+    h = compute_health(read_run_history(output_dir), CONFIG)
+    icon, box = STATUS_STYLE[h["status"]]
+    if h["status"] == "UNKNOWN":
+        box(f"{icon} Pipeline health: UNKNOWN - no runs yet")
+        return
+    last = h["last_run"]
+    box(f"{icon} **Pipeline health: {h['status']}** · last run `{last['run_id']}` at {last['finished_at']} "
+        f"({last.get('status', '')}) · success rate {h['success_rate_pct']}% over {h['window']} runs · "
+        f"avg {h['avg_duration_s']}s · {'; '.join(h['reasons'])}")
+
+
+live_health_strip()
+
+# ALERTS banner: only WARNING and CRITICAL here; INFO alerts are on the Data Quality tab.
+serious = [a for a in ALERTS if a["severity"] != "INFO"]
+if serious:
+    with st.expander(f"🚨 {len(serious)} alert(s) need attention - "
+                     f"{sum(a['severity'] == 'CRITICAL' for a in serious)} critical", expanded=True):
+        for a in serious:
+            (st.error if a["severity"] == "CRITICAL" else st.warning)(
+                f"**{a['severity']} · {a['code']}** - {a['message']}  \n💡 {a['advice']}")
+if not R["ok"]:
+    st.error("This run did NOT pass its quality gate, so its outputs were **not published** "
+             "(the previous good outputs are kept). The numbers below are shown for investigation only.")
+
+# key= makes Streamlit REMEMBER the open tab, so clicking a button (e.g. in the Chaos Lab)
+# reruns the page without jumping back to the first tab.
 tabs = st.tabs(["🔀 Pipeline", "📊 Overview", "💰 Revenue & Segments", "🧠 Analytics",
-                "🎧 Support", "✅ Data Quality", "🔍 Customer Lookup"])
+                "🎧 Support", "✅ Data Quality", "🔍 Customer Lookup", "❤️ Pipeline Health", "🧪 Chaos Lab"],
+               key="main_tabs")
 
 # ================================================================= TAB 1: PIPELINE
 with tabs[0]:
@@ -377,17 +425,15 @@ with tabs[5]:
         st.markdown("**dq_report.json** (format from the brief + extras)")
         st.json(DQ, expanded=1)
 
+    st.markdown("**🚨 Alerts raised by this run** (limits in config.json -> alerts)")
+    if ALERTS:
+        table(pd.DataFrame(ALERTS)[["severity", "code", "source", "message", "value", "threshold", "advice"]])
+    else:
+        st.success("No alerts.")
+
     st.markdown("**Quarantine - every rejected record and why** (nothing is silently deleted)")
     table(R["quarantine"].rename(columns={"_source": "source", "_source_row": "record"}))
 
-    history = read_run_history(output_dir)
-    if len(history) > 1:
-        st.markdown("**Run history** - DQ score and duration of every run")
-        h = pd.DataFrame(history)
-        h["run"] = range(1, len(h) + 1)
-        left, right = st.columns(2)
-        left.line_chart(h, x="run", y="dq_score_pct")
-        right.line_chart(h, x="run", y="duration_seconds")
 
 # ================================================================= TAB 7: CUSTOMER LOOKUP
 with tabs[6]:
@@ -414,3 +460,109 @@ with tabs[6]:
             st.warning("No usable order data for this customer (missing or quarantined) - segment is 'No order data'.")
         if not c["has_ticket_data"]:
             st.warning("No usable support data for this customer.")
+
+# ================================================================= TAB 8: PIPELINE HEALTH (live)
+with tabs[7]:
+    st.subheader("Pipeline health - live")
+    st.caption("Refreshes every 5 seconds from output/run_history.jsonl. Every run is recorded, good or failed: "
+               "from this dashboard, the command line, a scheduler, or a chaos test.")
+
+    if st.button("▶️ Run the pipeline now", help="Runs the pipeline on the current data and records the run"):
+        with pipeline_lock():
+            now = run_pipeline.execute(input_dir=input_dir, output_dir=output_dir)
+        (st.success if now["ok"] else st.error)(
+            f"Run {now['run_id']} finished with exit code {now['exit_code']} ({now['summary']['status']})")
+
+    @st.fragment(run_every="5s")
+    def health_panel():
+        history = read_run_history(output_dir)
+        h = compute_health(history, CONFIG)
+        icon, box = STATUS_STYLE[h["status"]]
+        box(f"### {icon} {h['status']}\n" + "\n".join(f"- {r}" for r in h["reasons"]))
+        if not history:
+            return
+        k = st.columns(5)
+        k[0].metric("Runs recorded", h["runs"])
+        k[1].metric(f"Success rate (last {h['window']})", f"{h['success_rate_pct']}%")
+        k[2].metric("Hours since last good run", h["hours_since_success"] if h["hours_since_success"] is not None else "-")
+        k[3].metric("Avg duration", f"{h['avg_duration_s']} s")
+        k[4].metric("Slowest run", f"{h['max_duration_s']} s")
+
+        runs = pd.DataFrame(history[-CONFIG["health"]["window_runs"]:])
+        runs["run"] = range(1, len(runs) + 1)
+        runs["result"] = runs["ok"].map({True: "success", False: "failed"})
+        runs["duration_seconds"] = runs["duration_seconds"].fillna(0)
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Run timeline** (red = failed)")
+            chart = alt.Chart(runs).mark_bar().encode(
+                x=alt.X("run:O", title="run"), y=alt.Y("duration_seconds:Q", title="seconds"),
+                color=alt.Color("result:N", scale=alt.Scale(domain=["success", "failed"], range=["#43A047", "#E53935"])),
+                tooltip=[c for c in ["run_id", "finished_at", "status", "exit_code", "duration_seconds", "error"]
+                         if c in runs.columns])
+            st.altair_chart(chart.properties(height=240), width="stretch")
+        with right:
+            st.markdown("**DQ score per run**")
+            scored = runs.dropna(subset=["dq_score_pct"]) if "dq_score_pct" in runs else runs.head(0)
+            if len(scored):
+                st.altair_chart(alt.Chart(scored).mark_line(point=True).encode(
+                    x="run:O", y=alt.Y("dq_score_pct:Q", scale=alt.Scale(zero=False), title="DQ score %"),
+                    tooltip=["run_id", "dq_score_pct", "quarantined_records"]).properties(height=240), width="stretch")
+
+        if h["last_failure"]:
+            f = h["last_failure"]
+            st.markdown("**Last failure**")
+            st.error(f"Run `{f['run_id']}` at {f['finished_at']} - **{f.get('status')}** "
+                     f"(exit {f.get('exit_code')}) in stage **{f.get('stage', 'quality gate')}**: "
+                     f"{f.get('error') or 'CRITICAL alert / failed check'}  \n"
+                     f"💡 {f.get('hint') or 'See the alerts of that run.'}  \n"
+                     f"🧾 crash report: `{f.get('crash_report', 'n/a (quality failure, outputs kept in failed_runs/)')}`")
+
+        cols = [c for c in ["run_id", "finished_at", "status", "exit_code", "duration_seconds", "total_records",
+                            "quarantined_records", "dq_score_pct", "retries", "alerts", "stage", "error"] if c in runs]
+        st.markdown("**Recent runs**")
+        table(runs[cols].iloc[::-1].astype(str))
+
+    health_panel()
+
+# ================================================================= TAB 9: CHAOS LAB
+with tabs[8]:
+    st.subheader("🧪 Chaos Lab - break it on purpose, watch it recover")
+    st.caption("Each scenario runs in a private sandbox copy of the data: a good baseline run, then the fault, "
+               "then a clean run to prove recovery. Your real data and outputs are never touched. "
+               "Same engine as `python chaos_test.py`.")
+    catalogue = pd.DataFrame([{"scenario": s.name, "what breaks": s.fault, "expected exit": s.expected_exit,
+                               "must raise": s.expected_signal, "how the pipeline protects itself": s.recovery}
+                              for s in chaos.SCENARIOS])
+    table(catalogue)
+
+    left, right = st.columns([3, 1])
+    pick = left.selectbox("Scenario", [s.name for s in chaos.SCENARIOS], index=1, key="chaos_pick",
+                          format_func=lambda n: f"{n} - {chaos.BY_NAME[n].title}")
+    run_one = right.button("💥 Run scenario", width="stretch")
+    run_every = right.button("Run all 13", width="stretch")
+
+    if run_one or run_every:
+        names = [s.name for s in chaos.SCENARIOS] if run_every else [pick]
+        with st.spinner(f"Injecting {len(names)} fault(s)..."), pipeline_lock():
+            # The lock: chaos scenarios swap code for a moment, so no other run may happen meanwhile.
+            st.session_state["chaos_results"] = chaos.run_all(names, SAMPLE_DIR)
+
+    for r in st.session_state.get("chaos_results", []):
+        icon = "✅" if r["passed"] else "❌"
+        with st.expander(f"{icon} {r['title']} - exit {r['actual_exit']} (expected {r['expected_exit']}) · "
+                         f"health after fault + recovery: {r['health_after']} · {r['seconds']}s",
+                         expanded=len(st.session_state["chaos_results"]) == 1):
+            st.markdown(f"**Fault injected:** {r['fault']}  \n**Protection:** {r['recovery']}")
+            if r["error"]:
+                st.error(f"Stage **{r['stage']}** · {r['error']}  \n💡 {r['hint']}")
+            for a in r["alerts"]:
+                (st.error if a["severity"] == "CRITICAL" else st.warning)(f"{a['severity']} · {a['code']} - {a['message']}")
+            table(pd.DataFrame(r["checks"]).assign(passed=lambda d: d["passed"].map({True: "✅", False: "❌"})))
+            timeline = pd.DataFrame(r["history"])[["run_id", "status", "exit_code"]]
+            timeline.insert(0, "step", ["baseline", "fault injected", "recovery"][: len(timeline)])
+            st.markdown("**Sandbox run history** - good → fault → recovered")
+            table(timeline.astype(str))
+    if st.session_state.get("chaos_results"):
+        results = st.session_state["chaos_results"]
+        st.metric("Scenarios handled correctly", f"{sum(r['passed'] for r in results)}/{len(results)}")

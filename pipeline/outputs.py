@@ -6,7 +6,9 @@ OUTPUTS - write every result to the output/ folder.
     output/quarantine.csv                        every rejected record + reason
     output/lineage.csv                           every input record and what happened to it
     output/run_metrics.json                      per-stage counts and timings (pipeline diagram)
-    output/run_history.jsonl                     one line per run, ever (DQ trend)
+    output/alerts.json                           the alerts raised by this run
+    output/run_history.jsonl                     one line per run, ever - good AND failed (health panel)
+    output/failed_runs/<run_id>/                 outputs of an unhealthy run, kept for inspection only
     output/insights/*.csv + headlines.json       the business answers
 
 Why 3 formats for the 360?  CSV opens in Excel, JSON matches the brief's example and
@@ -70,11 +72,20 @@ def write_outputs(result, output_dir):
     write_json(result["headlines"], out / "insights" / "headlines.json")
 
     write_json(result["run_metrics"], out / "run_metrics.json")
+    write_json({"run_id": result["run_summary"]["run_id"], "alerts": result.get("alerts", [])},
+               out / "alerts.json")
 
-    # WHAT: append (not overwrite) one summary line per run.  WHY: keeps a history,
-    # so the dashboard can show whether data quality is getting better or worse.
+
+def append_history(output_dir, summary):
+    """Append ONE line per run - successful OR failed - to output/run_history.jsonl.
+
+    WHY append, not overwrite: the history is what the Pipeline Health panel reads
+    (success rate, last failure, duration trend, freshness).
+    """
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
     with open(out / "run_history.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(result["run_summary"], default=str) + "\n")
+        f.write(json.dumps(summary, default=str) + "\n")
 
 
 def read_run_history(output_dir):
@@ -82,5 +93,11 @@ def read_run_history(output_dir):
     path = Path(output_dir) / "run_history.jsonl"
     if not path.exists():
         return []
+    history = []
     with open(path, encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
+        for line in f:
+            try:
+                history.append(json.loads(line))
+            except json.JSONDecodeError:     # a half-written line (e.g. power cut) is skipped, not fatal
+                continue
+    return history

@@ -66,5 +66,25 @@
     "pareto_top_share": 0.2
   },
 
+  "alerts": {
+    "quarantine_rate_warning_pct": 0.5,
+    "quarantine_rate_critical_pct": 5.0,
+    "volume_change_warning_pct": 50,
+    "dq_score_drop_warning_points": 1.0,
+    "fail_on": "CRITICAL",
+    "notify_min_severity": "WARNING",
+    "webhook_env_var": "C360_ALERT_WEBHOOK"
+  },
+
+  "retry": {
+    "attempts": 3,
+    "backoff_seconds": 0.2
+  },
+
+  "health": {
+    "stale_after_hours": 26,
+    "window_runs": 20
+  },
+
   "as_of_date": null
 }
