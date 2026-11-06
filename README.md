@@ -25,7 +25,7 @@ A **Streamlit dashboard** shows the results, including a live picture of the pip
 | Data quality | 7 bad records caught and quarantined, 1,494 passed, **DQ score 99.53%** |
 | Output | 497 customers in `customer_360` (CSV + JSON + Parquet) + 12 insight tables |
 | Run time | under 1 second for the whole pipeline |
-| Tests | 64 test functions = **81 test cases**, all passing, plus CI on Windows and Linux |
+| Tests | 64 test functions = **81 test cases**, all passing, 98% code coverage, CI on Windows and Linux |
 
 ---
 
